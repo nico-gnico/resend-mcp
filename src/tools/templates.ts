@@ -45,6 +45,8 @@ export function addTemplateTools(
       title: 'Create Template',
       description: `Create a new email template in Resend. Templates are created in draft status. Use publish-template to make them available for sending. Variables use triple-brace syntax in HTML: {{{VAR_NAME}}}.
 
+**Workflow:** create-template → get-tiptap-json-content (with include_schema: true) → compose-template → publish-template.
+
 **Content options after creating:**
 - **compose-template** (recommended): Sets TipTap content that the user can visually edit in the Resend dashboard. Use this when the user wants to collaborate on or refine the template in the editor.
 - **update-template with html/text**: Sets static HTML/text content. Use this only when the user explicitly wants to set raw HTML. Switching between compose and html/text modes is lossy — some content or formatting may be lost. Ask the user before switching.`,
@@ -108,20 +110,20 @@ export function addTemplateTools(
         );
       }
 
-      return {
-        content: [
-          { type: 'text', text: 'Template created successfully (draft).' },
-          { type: 'text', text: `ID: ${response.data.id}` },
-          {
-            type: 'text',
-            text: 'The template is in draft status. Use publish-template to make it available for sending.',
-          },
-          {
-            type: 'text',
-            text: `Review your template before publishing: https://resend.com/templates/${response.data.id}\n\nOpening this link lets you:\n- Preview how the email renders across devices and email clients\n- Verify variables and placeholders are correctly defined\n- Check formatting, layout, and branding before it goes live\n- Catch any issues before the template is used in sends`,
-          },
-        ],
-      };
+      const resultContent: Array<{ type: 'text'; text: string }> = [
+        { type: 'text', text: 'Template created successfully (draft).' },
+        { type: 'text', text: `ID: ${response.data.id}` },
+        {
+          type: 'text',
+          text: `**Next step:** Use publish-template when ready for sending. To visually edit the content in the dashboard, call get-tiptap-json-content (with include_schema: true) → compose-template (note: switching to compose mode may lose some HTML formatting).`,
+        },
+        {
+          type: 'text',
+          text: `Preview: https://resend.com/templates/${response.data.id}`,
+        },
+      ];
+
+      return { content: resultContent };
     },
   );
 
@@ -265,11 +267,11 @@ export function addTemplateTools(
     'compose-template',
     {
       title: 'Compose Template',
-      description: `**Purpose:** Set the TipTap JSON content of a template, enabling it to be edited visually in the Resend dashboard editor. Automatically connects and disconnects from the editor.
+      description: `**Purpose:** Set the TipTap JSON content of a template, enabling it to be edited visually in the Resend dashboard editor. Automatically connects and disconnects from the editor. Can also update metadata (subject, name) in the same call.
 
 **This is the recommended way to set email content.** Content set via compose-template can be visually edited by the user in the dashboard.
 
-**Workflow:** get-tiptap-json-content → get-tiptap-schema → compose-template
+**Workflow:** get-tiptap-json-content (with include_schema: true) → compose-template
 
 **When to use:**
 - After create-template, to set the email body
@@ -296,22 +298,125 @@ export function addTemplateTools(
             z.record(z.string(), z.unknown()),
           )
           .describe(
-            'TipTap JSON content. Call get-tiptap-schema first to get the schema reference.',
+            'TipTap JSON content. Call get-tiptap-json-content (with include_schema: true) first to get the existing content and the schema reference.',
           ),
+        subject: z
+          .string()
+          .optional()
+          .describe('Update the default email subject.'),
+        name: z.string().optional().describe('Update the template name.'),
       },
     },
-    async ({ id, content }) => {
+    async ({ id, content, subject, name }) => {
+      // Compose the TipTap content with editor session
       await withEditorSession(
         { resource_type: 'template', resource_id: id },
         () => apiClient.composeTemplateContent(id, { content }),
       );
 
-      return {
-        content: [
-          { type: 'text', text: 'Template content composed successfully.' },
-          { type: 'text', text: `ID: ${id}` },
-        ],
-      };
+      // Update metadata if any was provided
+      const hasMetadata = subject !== undefined || name !== undefined;
+      if (hasMetadata) {
+        const metadataFields = [
+          ...(subject !== undefined ? ['subject'] : []),
+          ...(name !== undefined ? ['name'] : []),
+        ];
+
+        try {
+          const updateResponse = await resend.templates.update(id, {
+            ...(subject !== undefined && { subject }),
+            ...(name !== undefined && { name }),
+          } as UpdateTemplateOptions);
+
+          if (updateResponse.error) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Template content composed successfully, but metadata update failed for: ${metadataFields.join(', ')}.`,
+                },
+                { type: 'text', text: `ID: ${id}` },
+                {
+                  type: 'text',
+                  text: `Error: ${JSON.stringify(updateResponse.error)}`,
+                },
+                {
+                  type: 'text',
+                  text: `**Retry:** Call update-template with id "${id}" to set ${metadataFields.join(', ')}.`,
+                },
+              ],
+            };
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Template content composed successfully, but metadata update failed for: ${metadataFields.join(', ')}.`,
+              },
+              { type: 'text', text: `ID: ${id}` },
+              {
+                type: 'text',
+                text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+              {
+                type: 'text',
+                text: `**Retry:** Call update-template with id "${id}" to set ${metadataFields.join(', ')}.`,
+              },
+            ],
+          };
+        }
+      }
+
+      const resultParts: Array<{ type: 'text'; text: string }> = [
+        { type: 'text', text: 'Template content composed successfully.' },
+        { type: 'text', text: `ID: ${id}` },
+      ];
+
+      // Only check for missing metadata when the caller didn't provide any
+      if (!hasMetadata) {
+        try {
+          const current = await resend.templates.get(id);
+          if (!current.error) {
+            if (current.data.subject == null) {
+              resultParts.push({
+                type: 'text',
+                text: '**Note:** The template has no subject set. You can set it by calling compose-template again with the subject field, or use update-template.',
+              });
+            }
+
+            const status = current.data.status;
+            if (status === 'draft') {
+              resultParts.push({
+                type: 'text',
+                text: 'The template is in draft status. Use publish-template to make it available for sending.',
+              });
+            } else if (status === 'published') {
+              resultParts.push({
+                type: 'text',
+                text: 'The template is published. Use publish-template again to make the latest changes live.',
+              });
+            }
+          } else {
+            resultParts.push({
+              type: 'text',
+              text: '**Note:** Could not verify template metadata — check that a subject is set.',
+            });
+          }
+        } catch {
+          resultParts.push({
+            type: 'text',
+            text: '**Note:** Could not verify template metadata — check that a subject is set.',
+          });
+        }
+      }
+
+      resultParts.push({
+        type: 'text',
+        text: `Preview: https://resend.com/templates/${id}`,
+      });
+
+      return { content: resultParts };
     },
   );
 
@@ -388,7 +493,7 @@ export function addTemplateTools(
           },
           {
             type: 'text',
-            text: `Review your template before publishing: https://resend.com/templates/${id}\n\nOpening this link lets you:\n- Preview how the email renders across devices and email clients\n- Verify variables and placeholders are correctly defined\n- Check formatting, layout, and branding before it goes live\n- Catch any issues before the template is used in sends`,
+            text: `Preview: https://resend.com/templates/${id}`,
           },
         ],
       };

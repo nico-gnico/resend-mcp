@@ -49,50 +49,19 @@ export function addEditorTools(
   }
 
   server.registerTool(
-    'get-tiptap-schema',
-    {
-      title: 'Get TipTap Email Schema',
-      description: `**Purpose:** Retrieve the TipTap JSON schema reference for creating editable email content that works in the Resend dashboard editor.
-
-**When to use:**
-- Before using create-broadcast or update-broadcast with the \`content\` parameter
-- When you need to understand the available TipTap node types and structure
-
-**Returns:** A prompt describing the full TipTap JSON schema, including all node types, marks, and attributes.`,
-      inputSchema: {},
-    },
-    async () => {
-      if (!dashboard) {
-        throw new Error(
-          'Dashboard integration not configured. Provide a Resend API key to enable TipTap schema access.',
-        );
-      }
-
-      const { data, version } = await dashboard.getTiptapSchema();
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `TipTap Schema Reference (version: ${version}):\n\n${data}`,
-          },
-        ],
-      };
-    },
-  );
-
-  server.registerTool(
     'get-tiptap-json-content',
     {
       title: 'Get TipTap JSON Content',
-      description: `**Purpose:** Retrieve the existing TipTap JSON content of a broadcast or template. Returns the full TipTap document JSON currently stored for the resource.
+      description: `**Purpose:** Retrieve the existing TipTap JSON content of a broadcast or template, optionally bundled with the TipTap schema reference.
 
 **When to use:**
 - **Always call this before compose-broadcast or compose-template** to fetch the current document state — even if you expect it to be empty, the resource may have content set via the dashboard
 - When the user asks to edit, tweak, or modify existing email content
 - To inspect the current TipTap structure of a resource
 
-**Returns:** The TipTap JSON content object for the resource. Use this as the base for modifications, then pass the updated JSON to compose-broadcast or compose-template.`,
+**Returns:** The TipTap JSON content object for the resource, and optionally the TipTap schema. Use the content as the base for modifications, then pass the updated JSON to compose-broadcast or compose-template.
+
+**Tip:** Set include_schema to true to get both the existing content and the schema in one call.`,
       inputSchema: {
         resource_type: z
           .enum(['broadcast', 'template'])
@@ -103,22 +72,43 @@ export function addEditorTools(
           .describe(
             'The broadcast ID (UUID) or template identifier (UUID or alias)',
           ),
+        include_schema: z
+          .boolean()
+          .default(true)
+          .describe(
+            'Returns the TipTap schema reference alongside the content. Required for producing valid TipTap JSON. Set to false only if you already have the schema.',
+          ),
       },
     },
-    async ({ resource_type, resource_id }) => {
+    async ({ resource_type, resource_id, include_schema }) => {
+      const contentParts: Array<{ type: 'text'; text: string }> = [];
+
       const result = await apiClient.getEditorContent(
         resource_type,
         resource_id,
       );
 
-      return {
-        content: [
-          {
+      contentParts.push({
+        type: 'text',
+        text: `Existing TipTap JSON content:\n\n${JSON.stringify(result.content, null, 2)}`,
+      });
+
+      if (include_schema) {
+        try {
+          const { data, version } = await dashboard.getTiptapSchema();
+          contentParts.push({
             type: 'text',
-            text: JSON.stringify(result.content, null, 2),
-          },
-        ],
-      };
+            text: `\n\nTipTap Schema Reference (version: ${version}):\n\n${data}`,
+          });
+        } catch (err) {
+          contentParts.push({
+            type: 'text',
+            text: `\n\n**Warning:** Failed to fetch TipTap schema: ${err instanceof Error ? err.message : String(err)}. The content above is still valid — retry get-tiptap-json-content with include_schema: true if you need the schema.`,
+          });
+        }
+      }
+
+      return { content: contentParts };
     },
   );
 
@@ -129,8 +119,8 @@ export function addEditorTools(
       description: `**Purpose:** Show agent presence in the Resend dashboard editor. Users will see an agent avatar while connected.
 
 **When to use:**
-- Before making edits to a broadcast or template via the dashboard API
 - To signal to dashboard users that an AI agent is working on the content
+- **Not needed before compose-broadcast or compose-template** — those tools handle editor connection automatically. Only call this for manual editor presence outside of compose workflows.
 
 **Returns:** Connection token and room ID.`,
       inputSchema: {

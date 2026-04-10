@@ -38,7 +38,7 @@ export function addBroadcastTools(
 
 **"All contacts" note:** Broadcasts require a segment. There is no "all contacts" option in the API. If the user wants to send to all contacts, check list-segments for an existing segment that covers everyone. If none exists, suggest creating one with create-segment.
 
-**Workflow:** list-segments (if needed) → create-broadcast → compose-broadcast (to set email content editable in the dashboard) → send-broadcast.
+**Workflow:** list-segments (if needed) → create-broadcast → get-tiptap-json-content (with include_schema: true) → compose-broadcast → send-broadcast.
 
 **Content options after creating:**
 - **compose-broadcast** (recommended): Sets TipTap content that the user can visually edit in the Resend dashboard. Use this when the user wants to collaborate on or refine the email in the editor.
@@ -132,16 +132,29 @@ export function addBroadcastTools(
         );
       }
 
-      return {
-        content: [
-          { type: 'text', text: 'Broadcast created successfully.' },
-          { type: 'text', text: `ID: ${response.data.id}` },
-          {
-            type: 'text',
-            text: `Review your broadcast before sending: https://resend.com/broadcasts/${response.data.id}\n\nOpening this link lets you:\n- Preview how the email renders across devices and email clients\n- Verify personalization placeholders resolve correctly\n- Confirm audience targeting and segment selection\n- Catch any last-minute copy or formatting issues before it reaches your contacts`,
-          },
-        ],
-      };
+      const resultContent: Array<{ type: 'text'; text: string }> = [
+        { type: 'text', text: 'Broadcast created successfully.' },
+        { type: 'text', text: `ID: ${response.data.id}` },
+      ];
+
+      if (html) {
+        resultContent.push({
+          type: 'text',
+          text: `HTML content is set. To visually edit it in the dashboard instead, call get-tiptap-json-content → compose-broadcast (note: switching to compose mode may lose some HTML formatting).`,
+        });
+      } else {
+        resultContent.push({
+          type: 'text',
+          text: `**Next step:** Call get-tiptap-json-content with resource_type "broadcast", resource_id "${response.data.id}", and include_schema true — then call compose-broadcast to set the email body content.`,
+        });
+      }
+
+      resultContent.push({
+        type: 'text',
+        text: `Preview: https://resend.com/broadcasts/${response.data.id}`,
+      });
+
+      return { content: resultContent };
     },
   );
 
@@ -348,11 +361,11 @@ export function addBroadcastTools(
     'compose-broadcast',
     {
       title: 'Compose Broadcast',
-      description: `**Purpose:** Set the TipTap JSON content of a broadcast, enabling it to be edited visually in the Resend dashboard editor. Automatically connects and disconnects from the editor.
+      description: `**Purpose:** Set the TipTap JSON content of a broadcast, enabling it to be edited visually in the Resend dashboard editor. Automatically connects and disconnects from the editor. Can also update metadata (subject, preview text, name) in the same call.
 
 **This is the recommended way to set email content.** Content set via compose-broadcast can be visually edited by the user in the dashboard. Use this for newsletters and any broadcast where the user may want to refine the content.
 
-**Workflow:** get-tiptap-json-content → get-tiptap-schema → compose-broadcast
+**Workflow:** get-tiptap-json-content (with include_schema: true) → compose-broadcast
 
 **When to use:**
 - After create-broadcast, to set the email body
@@ -379,22 +392,158 @@ export function addBroadcastTools(
             z.record(z.string(), z.unknown()),
           )
           .describe(
-            'TipTap JSON content. Call get-tiptap-schema first to get the schema reference.',
+            'TipTap JSON content. Call get-tiptap-json-content (with include_schema: true) first to get the existing content and the schema reference.',
           ),
+        subject: z
+          .string()
+          .optional()
+          .describe('Update the email subject line.'),
+        previewText: z
+          .string()
+          .optional()
+          .describe(
+            'Update the preview text (shown in inbox before opening the email).',
+          ),
+        name: z
+          .string()
+          .optional()
+          .describe('Update the broadcast name (internal label).'),
       },
     },
-    async ({ broadcastId, content }) => {
+    async ({ broadcastId, content, subject, previewText, name }) => {
+      // Compose the TipTap content with editor session
       await withEditorSession(
         { resource_type: 'broadcast', resource_id: broadcastId },
         () => apiClient.composeBroadcastContent(broadcastId, { content }),
       );
 
-      return {
-        content: [
-          { type: 'text', text: 'Broadcast content composed successfully.' },
-          { type: 'text', text: `ID: ${broadcastId}` },
-        ],
-      };
+      // Update metadata if any was provided
+      const hasMetadata =
+        subject !== undefined ||
+        previewText !== undefined ||
+        name !== undefined;
+      if (hasMetadata) {
+        const metadataFields = [
+          ...(subject !== undefined ? ['subject'] : []),
+          ...(previewText !== undefined ? ['previewText'] : []),
+          ...(name !== undefined ? ['name'] : []),
+        ];
+
+        // The API requires `from` and `segmentId` to be set on the broadcast.
+        // Dashboard-created broadcasts may lack these — check before updating.
+        const current = await resend.broadcasts.get(broadcastId);
+        if (
+          !current.error &&
+          (!current.data.from || !current.data.audience_id)
+        ) {
+          const missing: string[] = [];
+          if (!current.data.from) missing.push('from');
+          if (!current.data.audience_id) missing.push('segmentId');
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Broadcast content composed successfully, but metadata update was skipped.',
+              },
+              { type: 'text', text: `ID: ${broadcastId}` },
+              {
+                type: 'text',
+                text: `The broadcast is missing required fields for update: ${missing.join(', ')}. Use update-broadcast to set ${metadataFields.join(', ')} along with the missing fields.`,
+              },
+              {
+                type: 'text',
+                text: `Preview: https://resend.com/broadcasts/${broadcastId}`,
+              },
+            ],
+          };
+        }
+
+        try {
+          const updateResponse = await resend.broadcasts.update(broadcastId, {
+            ...(subject !== undefined && { subject }),
+            ...(previewText !== undefined && { previewText }),
+            ...(name !== undefined && { name }),
+          });
+
+          if (updateResponse.error) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Broadcast content composed successfully, but metadata update failed for: ${metadataFields.join(', ')}.`,
+                },
+                { type: 'text', text: `ID: ${broadcastId}` },
+                {
+                  type: 'text',
+                  text: `Error: ${JSON.stringify(updateResponse.error)}`,
+                },
+                {
+                  type: 'text',
+                  text: `**Retry:** Call update-broadcast with broadcastId "${broadcastId}" to set ${metadataFields.join(', ')}.`,
+                },
+              ],
+            };
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Broadcast content composed successfully, but metadata update failed for: ${metadataFields.join(', ')}.`,
+              },
+              { type: 'text', text: `ID: ${broadcastId}` },
+              {
+                type: 'text',
+                text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+              {
+                type: 'text',
+                text: `**Retry:** Call update-broadcast with broadcastId "${broadcastId}" to set ${metadataFields.join(', ')}.`,
+              },
+            ],
+          };
+        }
+      }
+
+      const resultParts: Array<{ type: 'text'; text: string }> = [
+        { type: 'text', text: 'Broadcast content composed successfully.' },
+        { type: 'text', text: `ID: ${broadcastId}` },
+      ];
+
+      // Only check for missing metadata when the caller didn't provide any
+      if (!hasMetadata) {
+        try {
+          const current = await resend.broadcasts.get(broadcastId);
+          if (!current.error) {
+            const missing: string[] = [];
+            if (current.data.subject == null) missing.push('subject');
+            if (current.data.preview_text == null) missing.push('previewText');
+            if (missing.length > 0) {
+              resultParts.push({
+                type: 'text',
+                text: `**Note:** The broadcast is still missing: ${missing.join(', ')}. You can set these by calling compose-broadcast again with the missing fields, or use update-broadcast.`,
+              });
+            }
+          } else {
+            resultParts.push({
+              type: 'text',
+              text: '**Note:** Could not verify broadcast metadata — check that subject and preview text are set.',
+            });
+          }
+        } catch {
+          resultParts.push({
+            type: 'text',
+            text: '**Note:** Could not verify broadcast metadata — check that subject and preview text are set.',
+          });
+        }
+      }
+
+      resultParts.push({
+        type: 'text',
+        text: `Preview: https://resend.com/broadcasts/${broadcastId}`,
+      });
+
+      return { content: resultParts };
     },
   );
 
@@ -507,7 +656,7 @@ export function addBroadcastTools(
           { type: 'text', text: `ID: ${broadcastId}` },
           {
             type: 'text',
-            text: `Review your broadcast before sending: https://resend.com/broadcasts/${broadcastId}\n\nOpening this link lets you:\n- Preview how the email renders across devices and email clients\n- Verify personalization placeholders resolve correctly\n- Confirm audience targeting and segment selection\n- Catch any last-minute copy or formatting issues before it reaches your contacts`,
+            text: `Preview: https://resend.com/broadcasts/${broadcastId}`,
           },
         ],
       };
