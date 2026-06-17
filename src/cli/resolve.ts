@@ -10,11 +10,6 @@ function parsePort(parsed: ParsedArgs, env: NodeJS.ProcessEnv): number {
       : NaN;
   if (Number.isInteger(fromArg) && fromArg > 0 && fromArg < 65536)
     return fromArg;
-  const fromEnv =
-    //typeof env.MCP_PORT === 'string' && env.MCP_PORT.trim() !== ''
-    //  ? Number.parseInt(env.MCP_PORT.trim(), 10)
-    //  : NaN;
-    // APRÈS
   const portEnvRaw = env.MCP_PORT ?? env.PORT ?? '';
   const fromEnv =
     typeof portEnvRaw === 'string' && portEnvRaw.trim() !== ''
