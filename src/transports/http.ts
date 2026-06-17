@@ -115,14 +115,19 @@ export async function runHttp(
   //return new Promise((resolve, reject) => {
   //  const server = app.listen(port, () => {
   //    console.error(`Resend MCP server listening on http://127.0.0.1:${port}`);
-  const host = process.env.MCP_HOST ?? '127.0.0.1';
-  const allowedHosts = process.env.ALLOWED_HOSTS?.split(',') ?? [];
-  return new Promise((resolve, reject) => {
-  const server = app.listen(port, host, () => {
-  console.error(`Resend MCP server listening on http://${host}:${port}`);
-  console.error('  Streamable HTTP: POST/GET/DELETE /mcp');
-    
-    
+  
+  //const host = process.env.MCP_HOST ?? '127.0.0.1';
+  //const allowedHosts = process.env.ALLOWED_HOSTS?.split(',') ?? [];
+  //return new Promise((resolve, reject) => {
+  //const server = app.listen(port, host, () => {
+  //console.error(`Resend MCP server listening on http://${host}:${port}`);
+  
+
+  const host = process.env.MCP_HOST ?? '0.0.0.0';
+return new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => {
+      console.error(`Resend MCP server listening on http://${host}:${port}`);
+    console.error('  Streamable HTTP: POST/GET/DELETE /mcp');
     
     resolve(server);
     });
