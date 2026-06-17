@@ -46,8 +46,12 @@ export async function runHttp(
   options: ServerOptions,
   port: number,
 ): Promise<Server> {
-  const app = createMcpExpressApp();
-
+  //const app = createMcpExpressApp();
+  const allowedHosts = process.env.ALLOWED_HOSTS?.split(',').map(h => h.trim());
+  const app = createMcpExpressApp({
+  host: process.env.MCP_HOST ?? '0.0.0.0',
+  allowedHosts,
+});
   app.get('/health', (_req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
