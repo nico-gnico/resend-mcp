@@ -113,7 +113,7 @@ export async function runHttp(
   );
 
   return new Promise((resolve, reject) => {
-    const host = process.env.MCP_HOST || '0.0.0.0';
+    const host = process.env.MCP_HOST || 'resend-mcp-production-2ba3.up.railway.app';
     const server = app.listen(port, host, () => {
       console.error(`Resend MCP server listening on http://${host}:${port}`);
       console.error('  Streamable HTTP: POST/GET/DELETE /mcp');
